@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>สแกน QR - ตรวจรับนับของ</title>
+<!--
+  หน้าสแกน QR แยกนอก Google (ตั้งแต่ ก.พ. 2026 Google บล็อกกล้องสดในเว็บแอป Apps Script)
+  วางไฟล์นี้บน GitHub Pages แล้วใส่ลิงก์ไว้ใน SCAN_PAGE_URL ของ Code.gs
+  สแกนติดแล้ว: ส่ง SN กลับไปที่แอปที่เปิดหน้านี้ (postMessage) แล้วปิดตัวเอง
+  ถ้าส่งกลับไม่ได้: เปิดแอปใหม่พร้อม ?sn=... (ลิงก์แอปมากับ ?ret=)
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: system-ui, sans-serif; }
+  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .frame { position: fixed; left: 50%; top: 42%; width: 64vmin; height: 64vmin; transform: translate(-50%, -50%); border: 3px solid #fff; border-radius: 16px; box-shadow: 0 0 0 100vmax rgba(0,0,0,.45); }
+  .hint { position: fixed; left: 16px; right: 16px; top: calc(16px + env(safe-area-inset-top, 0px)); text-align: center; font-size: 16px; }
+  .bar { position: fixed; left: 16px; right: 16px; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .btn { background: #fff; color: #111; border: 0; border-radius: 10px; padding: 12px 16px; font-size: 16px; font-weight: 600; }
+  .ok { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 12px; background: #0d5e7d; font-size: 20px; text-align: center; padding: 24px; }
+  .ok b { font-family: ui-monospace, monospace; font-size: 22px; }
+  body.done .ok { display: flex; }
+</style>
+</head>
+<body>
+<video playsinline muted></video>
+<div class="frame"></div>
+<div class="hint" id="hint">กำลังเปิดกล้อง…</div>
+<div class="bar"><label class="btn">ถ่ายรูป QR<input type="file" accept="image/*" capture="environment" hidden id="file"></label><button class="btn" id="close">ปิด</button></div>
+<div class="ok"><div>สแกนได้</div><b id="sn"></b><div id="okmsg">กำลังกลับไปที่แอป…</div></div>
+<script>
+(function () {
+  const $ = function (s) { return document.querySelector(s); };
+  const hint = $('#hint'), video = $('video');
+  const ret = new URLSearchParams(location.search).get('ret') || '';
+  let stream = null, done = false, decode = null;
+
+  function loadJsQr() {
+    if (window.jsQR) return Promise.resolve(window.jsQR);
+    return new Promise(function (res, rej) {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js';
+      s.onload = function () { res(window.jsQR); };
+      s.onerror = function () { rej(new Error('โหลดตัวอ่าน QR ไม่ได้ ตรวจสอบอินเทอร์เน็ต')); };
+      document.head.appendChild(s);
+    });
+  }
+  async function makeDecoder() {
+    if ('BarcodeDetector' in window) {
+      try {
+        const f = await BarcodeDetector.getSupportedFormats();
+        if (f.indexOf('qr_code') >= 0) {
+          const det = new BarcodeDetector({ formats: ['qr_code'] });
+          return async function (src) { const r = await det.detect(src); return r.length ? r[0].rawValue : ''; };
+        }
+      } catch (e) { /* ใช้ jsQR */ }
+    }
+    const jsQR = await loadJsQr();
+    const cv = document.createElement('canvas'), g = cv.getContext('2d', { willReadFrequently: true });
+    let n = 0;
+    return async function (src, sizes) {
+      const w0 = src.videoWidth || src.naturalWidth || src.width, h0 = src.videoHeight || src.naturalHeight || src.height;
+      if (!w0 || !h0) return '';
+      // ภาพถ่ายจอ/สติกเกอร์ใกล้ๆ ย่อเล็กอ่านง่ายกว่า QR เล็กต้องใช้ภาพใหญ่: สลับขนาด
+      const list = sizes || [[480, 800, 640][(n++) % 3]];
+      for (let i = 0; i < list.length; i++) {
+        const k = Math.min(1, list[i] / Math.max(w0, h0));
+        cv.width = Math.round(w0 * k); cv.height = Math.round(h0 * k);
+        g.drawImage(src, 0, 0, cv.width, cv.height);
+        const r = jsQR(g.getImageData(0, 0, cv.width, cv.height).data, cv.width, cv.height, { inversionAttempts: 'attemptBoth' });
+        if (r && r.data) return r.data;
+      }
+      return '';
+    };
+  }
+  function stop() { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+  function goApp(sn) {
+    // ลิงก์กลับต้องเป็นเว็บแอป Apps Script เท่านั้น
+    if (/^https:\/\/script\.google\.com\//.test(ret)) location.href = ret + (ret.indexOf('?') >= 0 ? '&' : '?') + 'sn=' + encodeURIComponent(sn);
+    else $('#okmsg').textContent = 'กลับไปที่แอปแล้วพิมพ์ SN นี้ในช่องค้นหา';
+  }
+  function found(sn) {
+    if (done) return;
+    done = true; stop();
+    if (navigator.vibrate) try { navigator.vibrate(60); } catch (e) { /* */ }
+    $('#sn').textContent = sn;
+    document.body.classList.add('done');
+    const op = window.opener;
+    if (!op) return goApp(sn);
+    let acked = false;
+    window.addEventListener('message', function (e) { if (e.data && e.data.type === 'rcv-scan-ok') { acked = true; window.close(); } });
+    try { op.postMessage({ type: 'rcv-scan', sn: sn }, '*'); } catch (e) { /* */ }
+    setTimeout(function () { if (!acked) goApp(sn); }, 1500);
+  }
+  async function loop() {
+    if (done) return;
+    try { if (video.readyState >= 2) { const t = await decode(video); if (t) return found(t.trim()); } } catch (e) { /* ลองเฟรมถัดไป */ }
+    setTimeout(loop, 120);
+  }
+  $('#close').onclick = function () { stop(); window.close(); setTimeout(function () { if (ret) location.href = ret; }, 300); };
+  $('#file').onchange = async function () {
+    const f = this.files && this.files[0];
+    if (!f) return;
+    hint.textContent = 'กำลังอ่าน QR จากรูป…';
+    try {
+      decode = decode || await makeDecoder();
+      const url = URL.createObjectURL(f), img = new Image();
+      await new Promise(function (r, j) { img.onload = r; img.onerror = function () { j(new Error('เปิดรูปไม่ได้')); }; img.src = url; });
+      const t = await decode(img, [300, 450, 600, 800, 1100]);
+      URL.revokeObjectURL(url);
+      if (t) found(t.trim()); else { hint.textContent = 'ไม่เจอ QR ในรูป ลองถ่ายใหม่'; this.value = ''; }
+    } catch (e) { hint.textContent = e.message; }
+  };
+  (async function () {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false });
+      video.srcObject = stream;
+      await video.play();
+      decode = await makeDecoder();
+      hint.textContent = 'เล็ง QR บนสติกเกอร์ให้อยู่ในกรอบ';
+      loop();
+    } catch (e) {
+      hint.textContent = /โหลดตัวอ่าน/.test(e.message) ? e.message : 'เปิดกล้องไม่ได้ กดอนุญาตกล้องให้เว็บนี้ หรือกด "ถ่ายรูป QR"';
+    }
+  })();
+})();
+</script>
+</body>
+</html>
