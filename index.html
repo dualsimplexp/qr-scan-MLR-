@@ -34,6 +34,10 @@
   const hint = $('#hint'), video = $('video');
   const ret = new URLSearchParams(location.search).get('ret') || '';
   let stream = null, done = false, decode = null;
+  // กล้องมือถือเป็น fix focus ใกล้มากจะเบลอ: ซูม 2.0x ตลอด ให้ถือห่างได้
+  // ใช้ซูมของกล้องจริงถ้ามือถือรองรับ ถ้าไม่รองรับ (หรือได้ไม่ถึง) ขยายภาพแบบครอปกลางภาพแทน
+  const ZOOM = 2.0;
+  let dz = 1; // ส่วนที่ต้องขยายเองแบบดิจิทัล (1 = ไม่ต้อง)
 
   function loadJsQr() {
     if (window.jsQR) return Promise.resolve(window.jsQR);
@@ -51,7 +55,17 @@
         const f = await BarcodeDetector.getSupportedFormats();
         if (f.indexOf('qr_code') >= 0) {
           const det = new BarcodeDetector({ formats: ['qr_code'] });
-          return async function (src) { const r = await det.detect(src); return r.length ? r[0].rawValue : ''; };
+          const cc = document.createElement('canvas'), cg = cc.getContext('2d');
+          return async function (src) {
+            let s = src;
+            if (src === video && dz > 1 && video.videoWidth) { // อ่านเฉพาะส่วนกลางที่เห็นบนจอ
+              const w0 = video.videoWidth, h0 = video.videoHeight, sw = w0 / dz, sh = h0 / dz;
+              cc.width = Math.round(sw); cc.height = Math.round(sh);
+              cg.drawImage(video, (w0 - sw) / 2, (h0 - sh) / 2, sw, sh, 0, 0, cc.width, cc.height);
+              s = cc;
+            }
+            const r = await det.detect(s); return r.length ? r[0].rawValue : '';
+          };
         }
       } catch (e) { /* ใช้ jsQR */ }
     }
@@ -59,19 +73,36 @@
     const cv = document.createElement('canvas'), g = cv.getContext('2d', { willReadFrequently: true });
     let n = 0;
     return async function (src, sizes) {
-      const w0 = src.videoWidth || src.naturalWidth || src.width, h0 = src.videoHeight || src.naturalHeight || src.height;
-      if (!w0 || !h0) return '';
+      const fw = src.videoWidth || src.naturalWidth || src.width, fh = src.videoHeight || src.naturalHeight || src.height;
+      if (!fw || !fh) return '';
+      // ซูมดิจิทัล: อ่านเฉพาะส่วนกลางที่เห็นบนจอ
+      const c = (src === video && dz > 1) ? dz : 1, w0 = fw / c, h0 = fh / c, sx = (fw - w0) / 2, sy = (fh - h0) / 2;
       // ภาพถ่ายจอ/สติกเกอร์ใกล้ๆ ย่อเล็กอ่านง่ายกว่า QR เล็กต้องใช้ภาพใหญ่: สลับขนาด
       const list = sizes || [[480, 800, 640][(n++) % 3]];
       for (let i = 0; i < list.length; i++) {
         const k = Math.min(1, list[i] / Math.max(w0, h0));
         cv.width = Math.round(w0 * k); cv.height = Math.round(h0 * k);
-        g.drawImage(src, 0, 0, cv.width, cv.height);
+        g.drawImage(src, sx, sy, w0, h0, 0, 0, cv.width, cv.height);
         const r = jsQR(g.getImageData(0, 0, cv.width, cv.height).data, cv.width, cv.height, { inversionAttempts: 'attemptBoth' });
         if (r && r.data) return r.data;
       }
       return '';
     };
+  }
+  async function setZoom() {
+    const t = stream && stream.getVideoTracks()[0];
+    let hw = 1;
+    try {
+      const cap = t && t.getCapabilities ? t.getCapabilities() : {};
+      if (cap.zoom && cap.zoom.max > 1) {
+        await t.applyConstraints({ advanced: [{ zoom: Math.max(cap.zoom.min || 1, Math.min(ZOOM, cap.zoom.max)) }] });
+        const st = t.getSettings ? t.getSettings() : {};
+        hw = st.zoom || 1;
+      }
+    } catch (e) { hw = 1; }
+    dz = hw >= ZOOM - 0.01 ? 1 : ZOOM / hw;
+    video.style.transform = dz > 1 ? 'scale(' + dz + ')' : '';
+    return hw >= ZOOM - 0.01 ? 'กล้อง' : (hw > 1 ? 'กล้อง+ดิจิทัล' : 'ดิจิทัล');
   }
   function stop() { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
   function goApp(sn) {
@@ -116,8 +147,9 @@
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false });
       video.srcObject = stream;
       await video.play();
+      const zm = await setZoom();
       decode = await makeDecoder();
-      hint.textContent = 'เล็ง QR บนสติกเกอร์ให้อยู่ในกรอบ';
+      hint.textContent = 'เล็ง QR บนสติกเกอร์ให้อยู่ในกรอบ (ซูม ' + ZOOM.toFixed(1) + 'x ' + zm + ')';
       loop();
     } catch (e) {
       hint.textContent = /โหลดตัวอ่าน/.test(e.message) ? e.message : 'เปิดกล้องไม่ได้ กดอนุญาตกล้องให้เว็บนี้ หรือกด "ถ่ายรูป QR"';
