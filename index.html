@@ -34,9 +34,9 @@
   const hint = $('#hint'), video = $('video');
   const ret = new URLSearchParams(location.search).get('ret') || '';
   let stream = null, done = false, decode = null;
-  // กล้องมือถือเป็น fix focus ใกล้มากจะเบลอ: ซูม 2.0x ตลอด ให้ถือห่างได้
+  // กล้องมือถือเป็น fix focus ใกล้มากจะเบลอ: ซูม 2.5x ตลอด ให้ถือห่างได้
   // ใช้ซูมของกล้องจริงถ้ามือถือรองรับ ถ้าไม่รองรับ (หรือได้ไม่ถึง) ขยายภาพแบบครอปกลางภาพแทน
-  const ZOOM = 2.0;
+  const ZOOM = 2.5;
   let dz = 1; // ส่วนที่ต้องขยายเองแบบดิจิทัล (1 = ไม่ต้อง)
 
   function loadJsQr() {
